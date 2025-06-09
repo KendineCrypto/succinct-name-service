@@ -1,78 +1,63 @@
+require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const axios = require('axios');
-const FormData = require('form-data');
-require('dotenv').config();
+const pinataSDK = require('@pinata/sdk');
+const fs = require('fs');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-const upload = multer();
+const upload = multer({ dest: 'uploads/' });
+
+// Pinata API anahtarlarını kontrol et
+if (!process.env.PINATA_API_KEY || !process.env.PINATA_SECRET_KEY) {
+  console.error('Pinata API anahtarları eksik! Lütfen .env.local dosyasını kontrol et.');
+  process.exit(1);
+}
+
+const pinata = new pinataSDK(
+  process.env.PINATA_API_KEY,
+  process.env.PINATA_SECRET_KEY
+);
 
 console.log('PINATA_API_KEY:', process.env.PINATA_API_KEY);
+console.log('PINATA_SECRET_KEY:', process.env.PINATA_SECRET_KEY);
 console.log("=== SNS BACKEND BAŞLADI ===");
 
 app.post('/mint-image', upload.single('file'), async (req, res) => {
   try {
-    const { domain } = req.body;
-    const imageBuffer = req.file?.buffer;
+    const file = req.file;
+    const domain = req.body.domain;
 
-    if (!imageBuffer) {
-      console.error('Backend: Görsel dosyası gelmedi!');
-      return res.status(400).json({ error: 'No image file received' });
-    }
-    console.log('Gelen dosya:', req.file);
-    console.log('imageBuffer boyutu:', imageBuffer.length);
-
-    // 1. Görseli Pinata'ya yükle (AXIOS ile)
-    const formData = new FormData();
-    formData.append('file', imageBuffer, req.file.originalname);
-
-    const pinataRes = await axios.post(
-      'https://api.pinata.cloud/pinning/pinFileToIPFS',
-      formData,
-      {
-        maxBodyLength: 'Infinity',
-        headers: {
-          ...formData.getHeaders(),
-          pinata_api_key: process.env.PINATA_API_KEY,
-          pinata_secret_api_key: process.env.PINATA_API_SECRET,
-        },
-      }
-    );
-
-    const imageHash = pinataRes.data.IpfsHash;
-    const imageUrl = `ipfs://${imageHash}`;
+    // 1. Görseli yükle
+    const fileStream = fs.createReadStream(file.path);
+    const imageResult = await pinata.pinFileToIPFS(fileStream, {
+      pinataMetadata: { name: `${domain}.png` }
+    });
+    fs.unlinkSync(file.path);
 
     // 2. Metadata oluştur
     const metadata = {
       name: `${domain}.succ`,
-      description: `Succinct Name Service domain: ${domain}.succ`,
-      image: imageUrl,
-      attributes: [{ trait_type: 'Domain', value: `${domain}.succ` }]
+      description: "Succinct Name Service domain",
+      image: `ipfs://${imageResult.IpfsHash}`
     };
 
-    // 3. Metadata'yı Pinata'ya yükle (AXIOS ile)
-    const metadataRes = await axios.post(
-      'https://api.pinata.cloud/pinning/pinJSONToIPFS',
-      metadata,
-      {
-        headers: {
-          pinata_api_key: process.env.PINATA_API_KEY,
-          pinata_secret_api_key: process.env.PINATA_API_SECRET,
-        },
-      }
-    );
+    // 3. Metadata'yı yükle
+    const metadataResult = await pinata.pinJSONToIPFS(metadata, {
+      pinataMetadata: { name: `${domain}.json` }
+    });
 
-    const metadataHash = metadataRes.data.IpfsHash;
-    const tokenURI = `ipfs://${metadataHash}`;
-
-    res.json({ tokenURI });
-  } catch (err) {
-    console.error('Backend genel hata:', err);
-    res.status(500).json({ error: 'Internal server error', details: err.message });
+    // 4. Yanıtı döndür
+    res.json({ tokenURI: `ipfs://${metadataResult.IpfsHash}` });
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-app.listen(3001, () => console.log('Backend running on port 3001'));
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});

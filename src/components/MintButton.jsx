@@ -59,6 +59,8 @@ async function uploadDomainMetadata(domain) {
     throw new Error(`Mint API failed: ${res.status}`);
   }
   const data = await res.json();
+  console.log("Mint API yanıtı:", data);
+  console.log("Mint edilecek tokenURI:", data.tokenURI);
   return data.tokenURI;
 }
 

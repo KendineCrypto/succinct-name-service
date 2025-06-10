@@ -4,8 +4,19 @@ const cors = require('cors');
 const multer = require('multer');
 const pinataSDK = require('@pinata/sdk');
 const fs = require('fs');
+const rateLimit = require('express-rate-limit');
+const NodeCache = require('node-cache');
 
 const app = express();
+const cache = new NodeCache({ stdTTL: 3600 }); // 1 saat cache süresi
+
+// Rate limiter ayarları
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 dakika
+  max: 100 // IP başına maksimum istek sayısı
+});
+
+app.use(limiter);
 app.use(cors({
   origin: '*', // Geliştirme için. Güvenlik için sadece frontend domainini yazabilirsin.
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -29,10 +40,40 @@ console.log('PINATA_API_KEY:', process.env.PINATA_API_KEY);
 console.log('PINATA_SECRET_KEY:', process.env.PINATA_SECRET_KEY);
 console.log("=== SNS BACKEND BAŞLADI ===");
 
+// Pinata istek sayacı
+let requestCount = 0;
+const MAX_REQUESTS_PER_MINUTE = 30;
+let lastResetTime = Date.now();
+
+// Pinata rate limit kontrolü
+async function checkPinataRateLimit() {
+  const now = Date.now();
+  if (now - lastResetTime >= 60000) { // 1 dakika geçtiyse sayacı sıfırla
+    requestCount = 0;
+    lastResetTime = now;
+  }
+  
+  if (requestCount >= MAX_REQUESTS_PER_MINUTE) {
+    throw new Error('Pinata rate limit exceeded. Please try again in a minute.');
+  }
+  
+  requestCount++;
+}
+
 app.post('/mint-image', upload.single('file'), async (req, res) => {
   try {
     const file = req.file;
     const domain = req.body.domain;
+
+    // Cache kontrolü
+    const cacheKey = `mint-${domain}`;
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+      return res.json(cachedResult);
+    }
+
+    // Rate limit kontrolü
+    await checkPinataRateLimit();
 
     // 1. Görseli yükle
     const fileStream = fs.createReadStream(file.path);
@@ -40,6 +81,9 @@ app.post('/mint-image', upload.single('file'), async (req, res) => {
       pinataMetadata: { name: `${domain}.png` }
     });
     fs.unlinkSync(file.path);
+
+    // Rate limit kontrolü
+    await checkPinataRateLimit();
 
     // 2. Metadata oluştur
     const metadata = {
@@ -53,11 +97,20 @@ app.post('/mint-image', upload.single('file'), async (req, res) => {
       pinataMetadata: { name: `${domain}.json` }
     });
 
+    const result = { tokenURI: `ipfs://${metadataResult.IpfsHash}` };
+    
+    // Sonucu cache'e kaydet
+    cache.set(cacheKey, result);
+
     // 4. Yanıtı döndür
-    res.json({ tokenURI: `ipfs://${metadataResult.IpfsHash}` });
+    res.json(result);
   } catch (error) {
     console.error('Error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: error.reason === 'RATE_LIMITED' ? 'Please try again in a minute' : error.message
+    });
   }
 });
 

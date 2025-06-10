@@ -49,7 +49,8 @@ async function uploadDomainMetadata(domain) {
   formData.append('file', imageFile);
   formData.append('domain', domain);
 
-  const res = await fetch('http://localhost:3001/mint-image', {
+  const API_URL = import.meta.env.VITE_API_URL;
+  const res = await fetch(`${API_URL}/mint-image`, {
     method: 'POST',
     body: formData
   });
